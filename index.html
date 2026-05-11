@@ -491,6 +491,7 @@
   .stat-cancelled::before   { background: linear-gradient(90deg,#c53030,#e53e3e); }
   .stat-admitted::before    { background: linear-gradient(90deg,#065f46,#059669); }
   .stat-adm-cancelled::before { background: linear-gradient(90deg,#7b341e,#c05621); }
+  .stat-rejected::before       { background: linear-gradient(90deg,#6b21a8,#9333ea); }
   .stat-ol-released::before  { background: linear-gradient(90deg,#065f46,#10b981); }
   .stat-ol-hold::before      { background: linear-gradient(90deg,#1e40af,#3b82f6); }
   .stat-ol-pending::before   { background: linear-gradient(90deg,#6d28d9,#8b5cf6); }
@@ -503,6 +504,7 @@
   .stat-cancelled .stat-num   { color: #c53030; }
   .stat-admitted .stat-num    { color: #065f46; }
   .stat-adm-cancelled .stat-num { color: #7b341e; }
+  .stat-rejected .stat-num       { color: #6b21a8; }
   .stat-ol-released .stat-num  { color: #065f46; }
   .stat-ol-hold .stat-num      { color: #1e40af; }
   .stat-ol-pending .stat-num   { color: #6d28d9; }
@@ -694,13 +696,43 @@
   .dash-empty::before { content: '🔍'; display: block; font-size: 32px; margin-bottom: 10px; }
   .dash-loading {
     text-align: center;
-    padding: 60px 20px;
+    padding: 40px 20px 20px;
     color: var(--text-muted);
     font-size: 14px;
   }
   .spinner.dark {
     border-color: rgba(26,54,93,0.15);
     border-top-color: var(--primary);
+  }
+
+  /* ── Skeleton loader ── */
+  @keyframes shimmer {
+    0%   { background-position: -700px 0; }
+    100% { background-position: 700px 0; }
+  }
+  .skel {
+    display: inline-block;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #e8e8e8 25%, #f5f5f5 50%, #e8e8e8 75%);
+    background-size: 700px 100%;
+    animation: shimmer 1.4s infinite linear;
+  }
+  .skel-row td { padding: 11px 14px !important; }
+  .skel-stat {
+    height: 28px; border-radius: 6px; margin: 4px auto 6px; display: block;
+  }
+  .load-progress-bar {
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    border-radius: 3px;
+    margin-bottom: 16px;
+    animation: progressPulse 1.6s ease-in-out infinite;
+    transform-origin: left;
+  }
+  @keyframes progressPulse {
+    0%   { opacity: 0.5; width: 20%; }
+    50%  { opacity: 1;   width: 75%; }
+    100% { opacity: 0.5; width: 20%; }
   }
 
   /* Result count badge */
@@ -1482,7 +1514,7 @@
             <div class="search-wrap">
             <input type="text" id="searchBox" class="search-input" placeholder="Search name, email, contact…">
           </div>
-            <button class="btn btn-primary btn-sm" onclick="loadDashboard()">⟳ Refresh</button>
+            <button class="btn btn-primary btn-sm" onclick="hardRefresh()">⟳ Refresh</button>
             <button class="btn btn-secondary btn-sm" onclick="exportCSV()">⬇ CSV</button>
           </div>
         </div>
@@ -1500,6 +1532,7 @@
           <div class="stat-card stat-ol-released"><div class="stat-num" id="statOLReleased">0</div><div class="stat-label">OL Released</div></div>
           <div class="stat-card stat-ol-hold"><div class="stat-num" id="statOLHold">0</div><div class="stat-label">OL on Hold</div></div>
           <div class="stat-card stat-ol-pending"><div class="stat-num" id="statOLPending">0</div><div class="stat-label">OL Pending</div></div>
+          <div class="stat-card stat-rejected"><div class="stat-num" id="statRejectedByStudent">0</div><div class="stat-label">Rejected by Student</div></div>
         </div>
 
         <div class="filter-bar">
@@ -1509,6 +1542,7 @@
           <select class="filter-select" id="filterStream"><option value="">All Streams</option></select>
           <select class="filter-select" id="filterManager"><option value="">All Managers</option></select>
           <select class="filter-select" id="filterTeamLeader"><option value="">All Team Leaders</option></select>
+          <select class="filter-select" id="filterCounsellor"><option value="">All Counsellors</option></select>
           <div class="date-range-wrap">
             <span class="date-range-label">📅 Date</span>
             <input type="date" class="date-input" id="filterDateFrom" title="From date">
@@ -1785,10 +1819,244 @@
 <div class="toast-container" id="toastContainer"></div>
 
 <script>
+"use strict";
 // ════════════════════════════════════════════════════════════
-// CONFIG — Paste your Google Apps Script Web App URL here
+// CONFIG
 // ════════════════════════════════════════════════════════════
-const API_URL = "https://script.google.com/macros/s/AKfycbw-bKQqiZjZ1-mokmL2fJMUgVftMo8l1oPP-r97kAXSgqBumpvNU32U_uPEV4b7LayDzw/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbwdH_dytAOVuJS8Dk2YT7xbLPXSlbJe-iPBz-RjiLXxwavqg69C6b_cqHyysELz-luFVQ/exec";
+
+// ══════════════════════════════════════════════════════════════════════════
+// ADVANCED CACHE ENGINE
+// Strategy: IndexedDB (50MB) → stale-while-revalidate → background sync
+// ══════════════════════════════════════════════════════════════════════════
+const DB_NAME      = "hs_portal_db";
+const DB_VERSION   = 2;
+const STORE_NAME   = "cache";
+const CACHE_KEY    = "all_entries";
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 min — serve stale, revalidate in bg
+let _cacheTime   = 0;
+let _fetchingFull = false;
+let _db           = null;
+
+// ── IndexedDB helpers ──────────────────────────────────────────────────────
+function _openDB() {
+  if (_db) return Promise.resolve(_db);
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
+    };
+    req.onsuccess  = e => { _db = e.target.result; res(_db); };
+    req.onerror    = () => rej(req.error);
+  });
+}
+
+async function _idbSave(entries) {
+  try {
+    const db = await _openDB();
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).put({ data: entries, ts: Date.now() }, CACHE_KEY);
+  } catch(e) {
+    // IDB failed — fallback to localStorage (compressed)
+    try {
+      localStorage.setItem("hs_cache_ts", String(Date.now()));
+      localStorage.setItem("hs_cache", JSON.stringify(entries));
+    } catch(_) {}
+  }
+}
+
+async function _idbLoad() {
+  try {
+    const db  = await _openDB();
+    return new Promise((res) => {
+      const tx  = db.transaction(STORE_NAME, "readonly");
+      const req = tx.objectStore(STORE_NAME).get(CACHE_KEY);
+      req.onsuccess = () => {
+        const rec = req.result;
+        if (!rec) return res(null);
+        if (Date.now() - rec.ts > CACHE_TTL_MS) return res({ stale: true, data: rec.data });
+        res({ stale: false, data: rec.data });
+      };
+      req.onerror = () => res(null);
+    });
+  } catch(e) {
+    // IDB failed — try localStorage fallback
+    try {
+      const ts  = parseInt(localStorage.getItem("hs_cache_ts") || "0");
+      const raw = localStorage.getItem("hs_cache");
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      return { stale: Date.now() - ts > CACHE_TTL_MS, data };
+    } catch(_) { return null; }
+  }
+}
+
+async function _idbClear() {
+  try {
+    const db = await _openDB();
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).delete(CACHE_KEY);
+  } catch(e) {}
+  try { localStorage.removeItem("hs_cache"); localStorage.removeItem("hs_cache_ts"); } catch(_) {}
+}
+
+function _isCacheValid() {
+  return allEntries.length > 0 && (Date.now() - _cacheTime) < CACHE_TTL_MS;
+}
+
+// ── Process entries: build search strings + computed display fields ────────
+function _processEntries(startIdx) {
+  const from = startIdx != null ? startIdx : 0;
+  for (let i = from; i < allEntries.length; i++) {
+    const e = allEntries[i];
+    e._idx = i;
+    e._searchStr = Object.entries(e)
+      .filter(([k]) => k !== "Password" && !k.startsWith("_"))
+      .map(([, v]) => String(v == null ? "" : v)).join("·").toLowerCase();
+    e._dateFmt       = fmtDateDisplay(e["Form Submitted date"]);
+    e._statusHtml    = renderStatus(e["Application Status"]);
+    e._ragHtml       = renderRAG(e["RAG"] || "");
+    e._courseFeeHtml = fmtMoney(e["Course Fee"]);
+    e._semFeeHtml    = fmtMoney(e["Semester Fee"]);
+    _entryMap.set(String(e["Application Number"] || i), e);
+  }
+}
+
+// ── Sync indicator UI ──────────────────────────────────────────────────────
+function _setSyncStatus(state) {
+  // state: 'syncing' | 'done' | 'stale' | 'error'
+  let el = document.getElementById("_syncBadge");
+  if (!el) {
+    el = document.createElement("span");
+    el.id = "_syncBadge";
+    el.style.cssText = "font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;margin-left:8px;transition:all 0.3s;display:inline-flex;align-items:center;gap:4px;";
+    const rc = document.getElementById("resultCount");
+    if (rc) rc.parentNode && rc.parentNode.appendChild(el);
+  }
+  const styles = {
+    syncing : { bg:"#e0f2fe", color:"#0369a1", text:"⟳ Syncing…",    spin: true  },
+    done    : { bg:"#dcfce7", color:"#166534", text:"✓ Up to date",   spin: false },
+    stale   : { bg:"#fef9c3", color:"#854d0e", text:"⚠ Stale data",   spin: false },
+    error   : { bg:"#fee2e2", color:"#991b1b", text:"✕ Sync failed",  spin: false },
+  };
+  const s = styles[state] || styles.done;
+  el.style.background = s.bg;
+  el.style.color      = s.color;
+  el.innerHTML        = s.spin
+    ? `<span style="display:inline-block;width:10px;height:10px;border:2px solid ${s.color}40;border-top-color:${s.color};border-radius:50%;animation:spin .6s linear infinite;"></span> Syncing…`
+    : s.text;
+  if (state === "done") setTimeout(() => { if (el) el.style.opacity = "0"; }, 3000);
+  else el.style.opacity = "1";
+}
+
+// ── Boot: load IDB → show immediately → revalidate in background ──────────
+document.addEventListener("DOMContentLoaded", async () => {
+  // 1. Try to load from IDB instantly (no network)
+  const cached = await _idbLoad();
+  if (cached && cached.data && cached.data.length > 0) {
+    allEntries = cached.data;
+    _cacheTime = cached.stale ? 0 : Date.now();
+    _processEntries(0);
+    if (cached.stale) _setSyncStatus("stale");
+  }
+
+  // 2. Always start a background server sync
+  setTimeout(() => _bgRefresh(false), 500);
+
+  // 3. Hover pre-warm (if cache invalid)
+  const dashTab = document.querySelector('.tab[data-page="pageDashboard"]');
+  if (dashTab) dashTab.addEventListener("mouseenter", () => {
+    if (!_isCacheValid() && !_fetchingFull) _bgRefresh(false);
+  }, { passive: true });
+});
+
+// ── Background refresh: fetch → save → silently update dashboard ──────────
+async function _bgRefresh(forceRefresh) {
+  if (_fetchingFull) return;
+  _fetchingFull = true;
+  _setSyncStatus("syncing");
+  try {
+    const data = await _fetchAllPages(!!forceRefresh);
+    if (data && data.length > 0) {
+      allEntries = data;
+      _cacheTime = Date.now();
+      _processEntries(0);
+      await _idbSave(allEntries);
+      _setSyncStatus("done");
+
+      // If dashboard is visible — seamlessly update without flicker
+      const dash = document.getElementById("pageDashboard");
+      if (dash && dash.classList.contains("active")) {
+        updateStats(allEntries);
+        populateFilters(allEntries);
+        // Only re-render table if user isn't mid-scroll
+        if (!_userIsScrolling) {
+          const prevPage = _currentPage;
+          renderTable(_currentFiltered.length ? applyFiltersAndReturn() : allEntries);
+          _currentPage = Math.min(prevPage, Math.ceil(_currentFiltered.length / PAGE_SIZE) - 1);
+          _renderPage();
+        }
+        const rc = document.getElementById("resultCount");
+        if (rc) rc.textContent = allEntries.length.toLocaleString() + " entries";
+      }
+    }
+  } catch(e) {
+    _setSyncStatus("error");
+    console.warn("BG refresh error:", e);
+  }
+  _fetchingFull = false;
+}
+
+// Track scroll to avoid re-rendering while user is scrolling
+let _userIsScrolling = false;
+let _scrollTimer = null;
+document.addEventListener("scroll", () => {
+  _userIsScrolling = true;
+  clearTimeout(_scrollTimer);
+  _scrollTimer = setTimeout(() => { _userIsScrolling = false; }, 300);
+}, { passive: true });
+
+async function _fetchAllPages(forceRefresh) {
+  const PAGE_SIZE = 5000;
+  const first = await _fetchPage(0, PAGE_SIZE, forceRefresh);
+  if (!first || first.status !== "success") return null;
+  const rows = [...(first.data || [])];
+  const totalPages = first.totalPages || 1;
+  if (totalPages > 1) {
+    // Fetch all remaining pages in parallel
+    const rest = await Promise.all(
+      Array.from({length: totalPages - 1}, (_, i) => _fetchPage(i + 1, PAGE_SIZE, false))
+    );
+    for (const pg of rest) {
+      if (pg && pg.status === "success") rows.push(...(pg.data || []));
+    }
+  }
+  return rows;
+}
+
+// applyFiltersAndReturn returns filtered array without re-rendering
+function applyFiltersAndReturn() {
+  const q  = (document.getElementById("searchBox")?.value || "").trim().toLowerCase();
+  const u  = (document.getElementById("filterUniversity")?.value || "").trim();
+  const c  = (document.getElementById("filterCampus")?.value || "").trim();
+  const st = (document.getElementById("filterStatus")?.value || "").trim();
+  const sm = (document.getElementById("filterStream")?.value || "").trim();
+  const m  = (document.getElementById("filterManager")?.value || "").trim();
+  const tl = (document.getElementById("filterTeamLeader")?.value || "").trim();
+  const cn = (document.getElementById("filterCounsellor")?.value || "").trim();
+  return allEntries.filter(row => {
+    if (u  && (row["University Name"]    || "").trim() !== u)  return false;
+    if (c  && (row["Campus"]             || "").trim() !== c)  return false;
+    if (st && (row["Application Status"] || "").trim() !== st) return false;
+    if (sm && (row["Stream"]             || "").trim() !== sm) return false;
+    if (m  && (row["Manager"]            || "").trim() !== m)  return false;
+    if (tl && (row["Team Leader"]        || "").trim() !== tl) return false;
+    if (cn && (row["Counsellor Name"]    || "").trim() !== cn) return false;
+    if (q  && !(row._searchStr || "").includes(q)) return false;
+    return true;
+  });
+}
 
 // ════════════════════════════════════════════════════════════
 const form = document.getElementById("applicationForm");
@@ -1963,47 +2231,166 @@ const DASHBOARD_PIN = "1234"; // matches Apps Script DASHBOARD_PASSWORD
 
 function requestDashboard() {
   switchPage("pageDashboard");
-  loadDashboard();
+  if (_isCacheValid()) {
+    updateStats(allEntries);
+    populateFilters(allEntries);
+    renderTable(allEntries);
+  } else {
+    loadDashboard();
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
 // DASHBOARD DATA
 // ══════════════════════════════════════════════════════════════════════════
 let allEntries = [];
+// Global lookup map: key → entry object (populated during render)
+const _entryMap = new Map();
 
-async function loadDashboard() {
-  const content = document.getElementById("dashContent");
-  content.innerHTML = `
-    <div class="dash-loading">
-      <div class="spinner dark"></div>
-      <div style="margin-top:12px;">Loading applications…</div>
+function _buildSkeletonTable(rows = 10) {
+  const cols = 28;
+  const widths = [50,120,80,130,90,160,110,130,70,120,110,100,80,80,110,70,70,90,80,80,80,100,60,120,80,80,50,100];
+  let skRows = "";
+  for (let r = 0; r < rows; r++) {
+    skRows += `<tr class="skel-row">${widths.map(w =>
+      `<td><span class="skel" style="width:${w * (0.6 + Math.random()*0.5)|0}px;height:13px;"></span></td>`
+    ).join("")}</tr>`;
+  }
+  return `
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr>
+          <th style="width:70px;">Action</th>
+          <th>Candidate Name</th><th>Campus</th><th>Programme Selected</th>
+          <th>Form Submitted Date</th><th>Registered Email ID</th>
+          <th>Registered Number</th><th>Application Number</th>
+          <th>Referral Code</th><th>Counsellor Name</th><th>Team Leader</th>
+          <th>Manager</th><th>Admission Date</th><th>Application Type</th>
+          <th>Application Status</th><th>User ID</th><th>Password</th>
+          <th>Alternate Number</th><th>State</th><th>City</th><th>Source</th>
+          <th>University Name</th><th>Stream</th><th>Course Specialization</th>
+          <th>Course Fee</th><th>Semester Fee</th><th>RAG</th><th>Remarks</th>
+        </tr></thead>
+        <tbody>${skRows}</tbody>
+      </table>
     </div>`;
+}
 
-  try {
-    const res = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "getDashboard" }),
-    });
-    const json = await res.json();
+function _showSkeletonStats() {
+  ["statTotal","statAppDone","statHalfForm","statTestPending","statPIPending",
+   "statAppHold","statAppCancelled","statAdmDone","statAdmCancelled",
+   "statOLReleased","statOLHold","statOLPending","statRejectedByStudent"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = `<span class="skel skel-stat" style="width:36px;"></span>`;
+  });
+  const rc = document.getElementById("resultCount");
+  if (rc) rc.textContent = "Loading…";
+}
 
-    if (json.status !== "success") {
-      throw new Error(json.message || "Failed to load data");
-    }
+// ── Chunked loader: fetches all pages from server progressively ───────────
+async function _fetchPage(page, pageSize, forceRefresh) {
+  const res  = await fetch(API_URL, {
+    method : "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body   : JSON.stringify({ action: "getDashboard", page, pageSize, forceRefresh: !!forceRefresh }),
+  });
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch { throw new Error("Invalid response from server — check your Apps Script deployment."); }
+}
 
-    allEntries = json.data || json.entries || [];
+function _setProgressBar(pct, label) {
+  const bar = document.getElementById("loadProgressBar");
+  if (bar) bar.style.width = pct + "%";
+  const lbl = document.getElementById("loadStatusLabel");
+  if (lbl) lbl.textContent = label;
+}
+
+async function hardRefresh() {
+  await _idbClear();
+  _cacheTime = 0;
+  allEntries = [];
+  _setSyncStatus("syncing");
+  await loadDashboard(true);
+}
+
+async function loadDashboard(forceServerRefresh) {
+  const content = document.getElementById("dashContent");
+
+  // ── CASE 1: Valid in-memory cache → instant render, sync in background ─
+  if (_isCacheValid() && allEntries.length > 0) {
     updateStats(allEntries);
     populateFilters(allEntries);
     renderTable(allEntries);
+    if (!_fetchingFull) _bgRefresh(!!forceServerRefresh);
+    return;
+  }
+
+  // ── CASE 2: Stale IDB cache → show immediately, then revalidate ────────
+  if (allEntries.length > 0) {
+    updateStats(allEntries);
+    populateFilters(allEntries);
+    renderTable(allEntries);
+    _bgRefresh(!!forceServerRefresh);
+    return;
+  }
+
+  // ── CASE 3: No cache at all → show beautiful skeleton + fetch ──────────
+  _showSkeletonStats();
+  content.innerHTML = `
+    <div style="padding:10px 0 4px;">
+      <div style="height:3px;background:#e8edf5;border-radius:4px;overflow:hidden;margin-bottom:8px;">
+        <div id="loadProgressBar" style="height:100%;background:linear-gradient(90deg,var(--primary),var(--accent));border-radius:4px;width:8%;transition:width 0.6s ease;"></div>
+      </div>
+      <div id="loadStatusLabel" style="font-size:11px;color:var(--text-muted);text-align:center;margin-bottom:10px;"></div>
+    </div>
+    ${_buildSkeletonTable(12)}`;
+
+  // Animate progress bar while waiting
+  let fakePct = 8;
+  const fakeTimer = setInterval(() => {
+    fakePct = Math.min(fakePct + (90 - fakePct) * 0.08, 88);
+    _setProgressBar(fakePct, fakePct < 30 ? "⚡ Connecting to Google Sheets…"
+      : fakePct < 60 ? "⚡ Reading data…"
+      : "⚡ Almost ready…");
+  }, 400);
+
+  try {
+    const data = await _fetchAllPages(!!forceServerRefresh);
+    clearInterval(fakeTimer);
+    if (!data) throw new Error("No data returned — check Apps Script deployment");
+
+    allEntries = data;
+    _cacheTime = Date.now();
+    _processEntries(0);
+    await _idbSave(allEntries);
+
+    _setProgressBar(100, `✅ ${allEntries.length.toLocaleString()} records loaded`);
+    updateStats(allEntries);
+    populateFilters(allEntries);
+    renderTable(allEntries);
+    _setSyncStatus("done");
+    setTimeout(() => {
+      const lbl = document.getElementById("loadStatusLabel");
+      if (lbl) lbl.style.display = "none";
+    }, 1200);
+
   } catch (err) {
-    content.innerHTML = `<div class="dash-empty">⚠ ${err.message || "Failed to load"}</div>`;
+    clearInterval(fakeTimer);
+    content.innerHTML = `<div class="dash-empty">⚠️ ${escapeHtml(err.message || "Failed to load")} <br><br>
+      <button class="btn btn-primary btn-sm" onclick="hardRefresh()" style="margin-top:8px;">🔄 Retry</button></div>`;
+    _setSyncStatus("error");
   }
 }
 
 function animateNum(id, target) {
   const el = document.getElementById(id);
   if (!el) return;
+  // Always clear skeleton markup first so "0" values render correctly
+  if (el.querySelector && el.querySelector(".skel")) el.innerHTML = "0";
   const start = parseInt(el.textContent) || 0;
+  // Always write the value (handles 0-after-skeleton case)
+  el.textContent = target;
   if (start === target) return;
   const duration = 500;
   const startTime = performance.now();
@@ -2014,6 +2401,25 @@ function animateNum(id, target) {
     if (progress < 1) requestAnimationFrame(step);
   }
   requestAnimationFrame(step);
+}
+
+// Apply stats returned directly from server (for instant stat-card population)
+function _applyServerStats(stats, total) {
+  animateNum("statTotal",        total || 0);
+  animateNum("statAppDone",      stats["Application Done"]      || 0);
+  animateNum("statHalfForm",     stats["Half Form"]             || 0);
+  animateNum("statTestPending",  stats["Test Pending"]          || 0);
+  animateNum("statPIPending",    stats["PI Pending"]            || 0);
+  animateNum("statAppHold",      stats["Application Hold"]      || 0);
+  animateNum("statAppCancelled", stats["Application Cancelled"] || 0);
+  animateNum("statAdmDone",      stats["Admission Done"]        || 0);
+  animateNum("statAdmCancelled", stats["Admission Cancelled"]   || 0);
+  animateNum("statOLReleased",   stats["OL Released"]           || 0);
+  animateNum("statOLHold",       stats["OL on Hold"]            || 0);
+  animateNum("statOLPending",    stats["OL Pending"]            || 0);
+  animateNum("statRejectedByStudent", stats["Rejected by Student"] || 0);
+  const rc = document.getElementById("resultCount");
+  if (rc) rc.textContent = (total || 0).toLocaleString() + " entries";
 }
 
 function updateStats(entries) {
@@ -2029,6 +2435,7 @@ function updateStats(entries) {
     "OL Released":           0,
     "OL on Hold":            0,
     "OL Pending":            0,
+    "Rejected by Student":   0,
   };
   entries.forEach(e => {
     const s = (e["Application Status"] || "").trim();
@@ -2047,6 +2454,7 @@ function updateStats(entries) {
   animateNum("statOLReleased",   counts["OL Released"]);
   animateNum("statOLHold",       counts["OL on Hold"]);
   animateNum("statOLPending",    counts["OL Pending"]);
+  animateNum("statRejectedByStudent", counts["Rejected by Student"]);
 
   const rc = document.getElementById("resultCount");
   if (rc) rc.textContent = entries.length + " entr" + (entries.length === 1 ? "y" : "ies");
@@ -2100,22 +2508,50 @@ function populateFilters(entries) {
   fill(document.getElementById("filterStream"), uniq("Stream"), "All Streams");
   fill(document.getElementById("filterManager"), uniq("Manager"), "All Managers");
   fill(document.getElementById("filterTeamLeader"), uniq("Team Leader"), "All Team Leaders");
+  fill(document.getElementById("filterCounsellor"), uniq("Counsellor Name"), "All Counsellors");
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// FAST PAGINATED TABLE
+// ══════════════════════════════════════════════════════════════════════════
+const PAGE_SIZE = 100;
+let _currentFiltered = [];
+let _currentPage = 0;
+
 function renderTable(entries) {
+  _currentFiltered = entries;
+  _currentPage = 0;
+  _renderPage();
+}
+
+function _renderPage() {
   const content = document.getElementById("dashContent");
+  const entries = _currentFiltered;
+
   if (!entries.length) {
     content.innerHTML = `<div class="dash-empty">No applications found</div>`;
     return;
   }
 
-  const rows = entries.map((e, i) => `
-    <tr style="animation-delay:${Math.min(i * 18, 300)}ms">
-      <td><button class="edit-btn" onclick='openEditForm(${JSON.stringify(JSON.stringify(e))})'>✏ Edit</button></td>
+  const start = _currentPage * PAGE_SIZE;
+  const end   = Math.min(start + PAGE_SIZE, entries.length);
+  const slice = entries.slice(start, end);
+  const total = entries.length;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+
+  // Build rows using pre-computed cached values — no extra work per cell
+  let rowsHtml = "";
+  for (let i = 0; i < slice.length; i++) {
+    const e = slice[i];
+    const key = String(e["Application Number"] || e._idx);
+    // Ensure map is populated (handles filtered entries not yet in map)
+    _entryMap.set(key, e);
+    rowsHtml += `<tr>
+      <td><button class="edit-btn" data-key="${escapeHtml(key)}" onclick="handleEditClick(this,'${escapeHtml(key)}')">✏ Edit</button></td>
       <td>${escapeHtml(e["Candidate Name"] || "")}</td>
       <td>${escapeHtml(e["Campus"] || "")}</td>
       <td>${escapeHtml(e["Programme Selected"] || "")}</td>
-      <td>${fmtDateDisplay(e["Form Submitted date"])}</td>
+      <td>${e._dateFmt || escapeHtml(e["Form Submitted date"] || "")}</td>
       <td>${escapeHtml(e["Registered Email ID"] || "")}</td>
       <td>${escapeHtml(e["Registered Number"] || "")}</td>
       <td><strong>${escapeHtml(e["Application Number"] || "")}</strong></td>
@@ -2125,7 +2561,7 @@ function renderTable(entries) {
       <td>${escapeHtml(e["Manager"] || "")}</td>
       <td>${escapeHtml(e["Admission Date"] || "")}</td>
       <td>${escapeHtml(e["Application Type"] || "")}</td>
-      <td>${renderStatus(e["Application Status"])}</td>
+      <td>${e._statusHtml || renderStatus(e["Application Status"])}</td>
       <td>${escapeHtml(e["User ID"] || "")}</td>
       <td>${escapeHtml(e["Password"] || "")}</td>
       <td>${escapeHtml(e["Alternate Number"] || "")}</td>
@@ -2135,50 +2571,74 @@ function renderTable(entries) {
       <td>${escapeHtml(e["University Name"] || "")}</td>
       <td>${escapeHtml(e["Stream"] || "")}</td>
       <td>${escapeHtml(e["Course Specialization"] || "")}</td>
-      <td style="text-align:right;">${fmtMoney(e["Course Fee"])}</td>
-      <td style="text-align:right;">${fmtMoney(e["Semester Fee"])}</td>
-      <td>${renderRAG(e["RAG"] || "")}</td>
+      <td style="text-align:right;">${e._courseFeeHtml || fmtMoney(e["Course Fee"])}</td>
+      <td style="text-align:right;">${e._semFeeHtml || fmtMoney(e["Semester Fee"])}</td>
+      <td>${e._ragHtml || renderRAG(e["RAG"] || "")}</td>
       <td>${escapeHtml(e["Remarks"] || "")}</td>
-    </tr>`).join("");
+    </tr>`;
+  }
+
+  const prevDis = _currentPage === 0 ? "disabled" : "";
+  const nextDis = _currentPage >= totalPages - 1 ? "disabled" : "";
 
   content.innerHTML = `
-    <div class="table-wrap">
+    <div class="table-wrap" id="tableScrollWrap">
       <table class="data-table">
-        <thead>
-          <tr>
-            <th style="width:60px;">Action</th>
-            <th>Candidate Name</th>
-            <th>Campus</th>
-            <th>Programme Selected</th>
-            <th>Form Submitted Date</th>
-            <th>Registered Email ID</th>
-            <th>Registered Number</th>
-            <th>Application Number</th>
-            <th>Referral Code</th>
-            <th>Counsellor Name</th>
-            <th>Team Leader</th>
-            <th>Manager</th>
-            <th>Admission Date</th>
-            <th>Application Type</th>
-            <th>Application Status</th>
-            <th>User ID</th>
-            <th>Password</th>
-            <th>Alternate Number</th>
-            <th>State</th>
-            <th>City</th>
-            <th>Source</th>
-            <th>University Name</th>
-            <th>Stream</th>
-            <th>Course Specialization</th>
-            <th>Course Fee</th>
-            <th>Semester Fee</th>
-            <th>RAG</th>
-            <th>Remarks</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
+        <thead><tr>
+          <th style="width:70px;">Action</th>
+          <th>Candidate Name</th><th>Campus</th><th>Programme Selected</th>
+          <th>Form Submitted Date</th><th>Registered Email ID</th>
+          <th>Registered Number</th><th>Application Number</th>
+          <th>Referral Code</th><th>Counsellor Name</th><th>Team Leader</th>
+          <th>Manager</th><th>Admission Date</th><th>Application Type</th>
+          <th>Application Status</th><th>User ID</th><th>Password</th>
+          <th>Alternate Number</th><th>State</th><th>City</th><th>Source</th>
+          <th>University Name</th><th>Stream</th><th>Course Specialization</th>
+          <th>Course Fee</th><th>Semester Fee</th><th>RAG</th><th>Remarks</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
       </table>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:0 4px;flex-wrap:wrap;gap:8px;">
+      <span style="font-size:12px;color:var(--text-muted);font-weight:500;">
+        Showing <strong>${(start+1).toLocaleString()}–${end.toLocaleString()}</strong> of <strong>${total.toLocaleString()}</strong> entries
+      </span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <button class="btn btn-secondary btn-sm" onclick="changePage(-1)" ${prevDis} style="padding:6px 14px;font-size:12px;">← Prev</button>
+        <span style="font-size:12px;font-weight:600;color:var(--primary);min-width:80px;text-align:center;">Page ${_currentPage+1} / ${totalPages}</span>
+        <button class="btn btn-secondary btn-sm" onclick="changePage(1)" ${nextDis} style="padding:6px 14px;font-size:12px;">Next →</button>
+      </div>
     </div>`;
+}
+
+function changePage(delta) {
+  const totalPages = Math.ceil(_currentFiltered.length / PAGE_SIZE);
+  const newPage = Math.max(0, Math.min(_currentPage + delta, totalPages - 1));
+  if (newPage === _currentPage) return;
+  _currentPage = newPage;
+  _renderPage();
+  // Scroll table into view smoothly
+  setTimeout(() => document.getElementById("tableScrollWrap")?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
+}
+
+// ── Edit entry by key (safe — reads from map, no giant onclick JSON) ──────
+function handleEditClick(btn, key) {
+  btn.disabled = true;
+  btn.textContent = "…";
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.textContent = "✏ Edit";
+  }, 2000);
+  openEditById(key);
+}
+
+function openEditById(key) {
+  const entry = _entryMap.get(String(key));
+  if (!entry) {
+    toast("Entry not found — please click ⟳ Refresh and try again", "error");
+    return;
+  }
+  openEditForm(entry);
 }
 
 function fmtMoney(v) {
@@ -2220,19 +2680,22 @@ function escapeHtml(s) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// FILTERS
+// FILTERS  (debounced search + instant dropdowns)
 // ══════════════════════════════════════════════════════════════════════════
-const searchBox = document.getElementById("searchBox");
+const searchBox       = document.getElementById("searchBox");
 const filterUniversity = document.getElementById("filterUniversity");
-const filterCampus = document.getElementById("filterCampus");
-const filterStatus = document.getElementById("filterStatus");
-const filterStream = document.getElementById("filterStream");
-const filterManager = document.getElementById("filterManager");
-const filterTeamLeader = document.getElementById("filterTeamLeader");
+const filterCampus    = document.getElementById("filterCampus");
+const filterStatus    = document.getElementById("filterStatus");
+const filterStream    = document.getElementById("filterStream");
+const filterManager   = document.getElementById("filterManager");
+const filterTeamLeader= document.getElementById("filterTeamLeader");
+const filterCounsellor = document.getElementById("filterCounsellor");
 const filterDateFrom  = document.getElementById("filterDateFrom");
 const filterDateTo    = document.getElementById("filterDateTo");
 
-function normalise(v) { return (v || "").toString().trim().toLowerCase(); }
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
 
 function applyFilters() {
   const q  = searchBox.value.trim().toLowerCase();
@@ -2242,59 +2705,45 @@ function applyFilters() {
   const sm = filterStream.value.trim();
   const m  = filterManager.value.trim();
   const tl = filterTeamLeader.value.trim();
+  const cn = filterCounsellor.value.trim();
   const df = filterDateFrom.value ? new Date(filterDateFrom.value) : null;
   const dt = filterDateTo.value   ? new Date(filterDateTo.value + "T23:59:59") : null;
 
+  const dfInt = df ? df.getUTCFullYear()*10000 + (df.getUTCMonth()+1)*100 + df.getUTCDate() : null;
+  const dtInt = dt ? dt.getUTCFullYear()*10000 + (dt.getUTCMonth()+1)*100 + dt.getUTCDate() : null;
+
   const filtered = allEntries.filter(row => {
-    if (u  && (row["University Name"]    || "").toString().trim() !== u)  return false;
-    if (c  && (row["Campus"]             || "").toString().trim() !== c)  return false;
-    if (st && (row["Application Status"] || "").toString().trim() !== st) return false;
-    if (sm && (row["Stream"]             || "").toString().trim() !== sm) return false;
-    if (m  && (row["Manager"]            || "").toString().trim() !== m)  return false;
-    if (tl && (row["Team Leader"]        || "").toString().trim() !== tl) return false;
-    if (df || dt) {
+    if (u  && (row["University Name"]    || "").trim() !== u)  return false;
+    if (c  && (row["Campus"]             || "").trim() !== c)  return false;
+    if (st && (row["Application Status"] || "").trim() !== st) return false;
+    if (sm && (row["Stream"]             || "").trim() !== sm) return false;
+    if (m  && (row["Manager"]            || "").trim() !== m)  return false;
+    if (tl && (row["Team Leader"]        || "").trim() !== tl) return false;
+    if (cn && (row["Counsellor Name"]     || "").trim() !== cn) return false;
+    if (dfInt || dtInt) {
       const d = parseDate(row["Form Submitted date"]);
       if (!d) return false;
-      // Compare as YYYYMMDD integers to avoid timezone issues
-      const dInt  = d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate();
-      const dfInt = df ? df.getUTCFullYear()*10000 + (df.getUTCMonth()+1)*100 + df.getUTCDate() : null;
-      const dtInt = dt ? dt.getUTCFullYear()*10000 + (dt.getUTCMonth()+1)*100 + dt.getUTCDate() : null;
+      const dInt = d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate();
       if (dfInt && dInt < dfInt) return false;
       if (dtInt && dInt > dtInt) return false;
     }
-    if (q) {
-      const haystack = Object.entries(row)
-        .filter(([k]) => k !== "Password")
-        .map(([, v]) => String(v || ""))
-        .join(" ")
-        .toLowerCase();
-      if (!haystack.includes(q)) return false;
-    }
+    if (q && !(row._searchStr || "").includes(q)) return false;
     return true;
   });
+
   renderTable(filtered);
   updateStats(filtered);
 
-  // Highlight active filters
-  [filterUniversity, filterCampus, filterStatus, filterStream, filterManager, filterTeamLeader].forEach(sel => {
-    if (sel.value) sel.classList.add("active");
-    else sel.classList.remove("active");
+  [filterUniversity,filterCampus,filterStatus,filterStream,filterManager,filterTeamLeader,filterCounsellor].forEach(sel => {
+    sel.classList.toggle("active", !!sel.value);
   });
   const dateWrap = document.querySelector(".date-range-wrap");
-  if (dateWrap) {
-    if (filterDateFrom.value || filterDateTo.value) dateWrap.style.borderColor = "var(--primary)";
-    else dateWrap.style.borderColor = "";
-  }
+  if (dateWrap) dateWrap.style.borderColor = (filterDateFrom.value || filterDateTo.value) ? "var(--primary)" : "";
 }
 
 function clearFilters() {
   searchBox.value = "";
-  filterUniversity.selectedIndex = 0;
-  filterCampus.selectedIndex = 0;
-  filterStatus.selectedIndex = 0;
-  filterStream.selectedIndex = 0;
-  filterManager.selectedIndex = 0;
-  filterTeamLeader.selectedIndex = 0;
+  [filterUniversity,filterCampus,filterStatus,filterStream,filterManager,filterTeamLeader,filterCounsellor].forEach(s => s.selectedIndex = 0);
   filterDateFrom.value = "";
   filterDateTo.value = "";
   const dateWrap = document.querySelector(".date-range-wrap");
@@ -2303,15 +2752,10 @@ function clearFilters() {
   updateStats(allEntries);
 }
 
-searchBox.addEventListener("input", applyFilters);
-filterUniversity.addEventListener("change", applyFilters);
-filterCampus.addEventListener("change", applyFilters);
-filterStatus.addEventListener("change", applyFilters);
-filterStream.addEventListener("change", applyFilters);
-filterManager.addEventListener("change", applyFilters);
-filterTeamLeader.addEventListener("change", applyFilters);
-filterDateFrom.addEventListener("change", applyFilters);
-filterDateTo.addEventListener("change", applyFilters);
+const _debouncedApply = debounce(applyFilters, 220);
+searchBox.addEventListener("input", _debouncedApply);
+[filterUniversity,filterCampus,filterStatus,filterStream,filterManager,filterTeamLeader,filterCounsellor,filterDateFrom,filterDateTo]
+  .forEach(el => el.addEventListener("change", applyFilters));
 
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -2354,39 +2798,76 @@ function exportCSV() {
 // ══════════════════════════════════════════════════════════════════════════
 let currentEditEntry = null;
 
-function openEditForm(jsonStr) {
-  currentEditEntry = JSON.parse(jsonStr);
+// Entry can be object or JSON string — handles both safely
+function openEditForm(entryOrJson) {
+  try {
+    currentEditEntry = (typeof entryOrJson === "object" && entryOrJson !== null)
+      ? entryOrJson
+      : JSON.parse(entryOrJson);
+  } catch(e) {
+    toast("Could not open edit form — invalid data", "error");
+    return;
+  }
+
   const editForm = document.getElementById("editForm");
 
-  // Populate all fields
   editForm.querySelectorAll("input, select, textarea").forEach(field => {
     if (!field.name || field.name === "_rowIndex") return;
-    const val = currentEditEntry[field.name] || "";
+    const raw = currentEditEntry[field.name];
+    const val = (raw == null ? "" : String(raw)).trim();
+
     if (field.tagName === "SELECT") {
-      // Try exact match first
-      const opt = [...field.options].find(o => o.value === val || o.text === val);
-      field.value = opt ? opt.value : val;
-      // If not found, set anyway (will show blank)
-      if (!field.value) field.value = "";
+      // Try exact value match first
+      let matched = false;
+      for (const opt of field.options) {
+        if (opt.value.trim() === val || opt.text.trim() === val) {
+          field.value = opt.value;
+          matched = true;
+          break;
+        }
+      }
+      // Case-insensitive fallback
+      if (!matched && val) {
+        const vLow = val.toLowerCase();
+        for (const opt of field.options) {
+          if (opt.value.toLowerCase() === vLow || opt.text.toLowerCase() === vLow) {
+            field.value = opt.value;
+            matched = true;
+            break;
+          }
+        }
+      }
+      // If still not matched, add as dynamic option so data isn't lost
+      if (!matched && val) {
+        const newOpt = document.createElement("option");
+        newOpt.value = val;
+        newOpt.textContent = val;
+        newOpt.dataset.dynamic = "1";
+        field.appendChild(newOpt);
+        field.value = val;
+      }
     } else {
       field.value = val;
     }
   });
 
-  // Store row identifier (Application Number)
   document.getElementById("editRowIndex").value = currentEditEntry["Application Number"] || "";
 
   const subtitle = document.getElementById("editModalSubtitle");
   if (subtitle) {
-    const name = currentEditEntry["Candidate Name"] || "Unknown";
+    const name   = currentEditEntry["Candidate Name"] || "Unknown";
     const appNum = currentEditEntry["Application Number"] || "";
     subtitle.textContent = name + (appNum ? " · " + appNum : "");
   }
 
   const modal = document.getElementById("editModal");
+  // Remove any leftover dynamic options from previous open
+  modal.querySelectorAll("option[data-dynamic]").forEach(o => {
+    if (o.parentElement.value !== o.value) o.remove();
+  });
   modal.style.opacity = "0";
   modal.classList.add("open");
-  requestAnimationFrame(() => { modal.style.opacity = "1"; });
+  requestAnimationFrame(() => requestAnimationFrame(() => { modal.style.opacity = "1"; }));
   document.body.style.overflow = "hidden";
 }
 
@@ -2398,119 +2879,145 @@ function closeEditModal() {
     modal.style.opacity = "";
     document.body.style.overflow = "";
     currentEditEntry = null;
-  }, 180);
+    // Clean up dynamic options
+    document.querySelectorAll("option[data-dynamic]").forEach(o => o.remove());
+  }, 200);
 }
 
-// Close modal on backdrop click
 document.getElementById("editModal").addEventListener("click", function(e) {
   if (e.target === this) closeEditModal();
 });
 
 async function saveEditForm() {
   const editForm = document.getElementById("editForm");
-  const saveBtn = document.getElementById("editSaveBtn");
 
   const data = {};
   new FormData(editForm).forEach((value, key) => { data[key] = value.trim(); });
-  // Merge Course Specialization into Programme Selected
+
   if (data["Course Specialization"]) {
     data["Programme Selected"] = (data["Programme Selected"] ? data["Programme Selected"] + " - " : "") + data["Course Specialization"];
     delete data["Course Specialization"];
   }
 
-  // Validate required fields
   if (!data["Candidate Name"] || !data["Application Number"]) {
     toast("Candidate Name and Application Number are required", "error");
     return;
   }
 
-  saveBtn.disabled = true;
-  saveBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;margin-right:6px;"></span>Saving...';
+  // ── OPTIMISTIC UPDATE: apply changes to in-memory entry instantly ──────
+  const snapshotEntry = currentEditEntry ? { ...currentEditEntry } : null;
+  if (currentEditEntry) {
+    Object.assign(currentEditEntry, data);
+    currentEditEntry._statusHtml    = renderStatus(currentEditEntry["Application Status"]);
+    currentEditEntry._dateFmt       = fmtDateDisplay(currentEditEntry["Form Submitted date"]);
+    currentEditEntry._ragHtml       = renderRAG(currentEditEntry["RAG"] || "");
+    currentEditEntry._courseFeeHtml = fmtMoney(currentEditEntry["Course Fee"]);
+    currentEditEntry._semFeeHtml    = fmtMoney(currentEditEntry["Semester Fee"]);
+    currentEditEntry._searchStr     = Object.entries(currentEditEntry)
+      .filter(([k]) => k !== "Password" && !k.startsWith("_"))
+      .map(([, v]) => String(v == null ? "" : v)).join("·").toLowerCase();
+  }
 
+  // Close modal & re-render table immediately — user sees result at once
+  toast("✅ Application updated!", "success");
+  closeEditModal();
+  setTimeout(() => _renderPage(), 60);
+
+  // ── Send to server in background ────────────────────────────────────────
   try {
-    // Send as updateApplication — requires Apps Script to handle this action
-    const payload = { action: "updateApplication", ...data };
-
-    const res = await fetch(API_URL, {
+    const res  = await fetch(API_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ action: "updateApplication", ...data }),
     });
-
+    const text = await res.text();
     let json;
-    try { json = await res.json(); } catch(e) { json = {}; }
+    try { json = JSON.parse(text); }
+    catch { json = { status: "error", message: "Non-JSON response — Apps Script may need updating" }; }
 
-    // If backend returns unknown action, show a helpful error
-    if (json.status === "error" && json.message && json.message.toLowerCase().includes("unknown")) {
-      throw new Error("⚠️ Your Google Apps Script needs to be updated to support editing. Please add the updateApplication handler.");
+    if (json.status === "error" && json.message && /unknown action/i.test(json.message)) {
+      showUpdateScriptHelper();
+      return;
     }
-    if (json.status !== "success") throw new Error(json.message || "Update failed");
-
-    toast("✅ Application updated successfully!", "success");
-    closeEditModal();
-    setTimeout(() => loadDashboard(), 600);
-  } catch (err) {
-    console.error(err);
-    // Show a detailed error modal instead of just a toast
-    showEditError(err.message || "Update failed — please try again");
-  } finally {
-    saveBtn.disabled = false;
-    saveBtn.innerHTML = "💾 Save Changes";
+    if (json.status !== "success") {
+      // Roll back optimistic update on failure
+      if (snapshotEntry && currentEditEntry == null) {
+        // entry is already out of modal scope; find it in allEntries and restore
+        const idx = allEntries.findIndex(e => String(e["Application Number"]) === String(snapshotEntry["Application Number"]));
+        if (idx !== -1) { Object.assign(allEntries[idx], snapshotEntry); _renderPage(); }
+      }
+      toast("❌ Save failed — " + (json.message || "check Apps Script logs"), "error");
+      return;
+    }
+    // Success confirmed — invalidate cache so next Refresh gets fresh data
+    _cacheTime = 0;
+  } catch (netErr) {
+    console.error("saveEditForm network error:", netErr);
+    toast("⚠️ Saved locally but couldn't reach server — check connection", "error");
   }
 }
 
-function showEditError(msg) {
-  const isScriptError = msg.includes("Apps Script") || msg.includes("unknown") || msg.includes("Unknown");
-  if (isScriptError) {
-    // Show the Apps Script code the user needs to add
-    const code = `// ADD THIS INSIDE your doPost(e) function in Google Apps Script
-// Find the if/else block that checks action and add:
-
+function showUpdateScriptHelper() {
+  const code = `// ── ADD THIS INSIDE YOUR doPost(e) if/else chain ──────────────────────
 else if (action === "updateApplication") {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const data = e.postData ? JSON.parse(e.postData.contents) : {};
-  const appNum = data["Application Number"];
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const appNumCol = headers.indexOf("Application Number") + 1;
-  if (appNumCol === 0) return ContentService.createTextOutput(JSON.stringify({status:"error",message:"Column not found"})).setMimeType(ContentService.MimeType.JSON);
-  const lastRow = sheet.getLastRow();
-  let foundRow = -1;
-  for (let r = 2; r <= lastRow; r++) {
-    if (sheet.getRange(r, appNumCol).getValue().toString().trim() === appNum.toString().trim()) {
-      foundRow = r; break;
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    const data  = e.postData ? JSON.parse(e.postData.contents) : {};
+    const appNum = String(data["Application Number"] || "").trim();
+    if (!appNum) return json({status:"error", message:"Application Number missing"});
+
+    const lastCol = sheet.getLastColumn();
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const appNumCol = headers.indexOf("Application Number");
+    if (appNumCol === -1) return json({status:"error", message:"Column 'Application Number' not found in sheet"});
+
+    const lastRow = sheet.getLastRow();
+    let foundRow = -1;
+    const colData = sheet.getRange(2, appNumCol + 1, lastRow - 1, 1).getValues();
+    for (let r = 0; r < colData.length; r++) {
+      if (String(colData[r][0]).trim() === appNum) { foundRow = r + 2; break; }
     }
+    if (foundRow === -1) return json({status:"error", message:"Row not found for: " + appNum});
+
+    const SKIP = new Set(["Application Number", "Form Submitted date", "action", "_rowIndex"]);
+    headers.forEach((h, i) => {
+      if (!SKIP.has(h) && data[h] !== undefined && data[h] !== null) {
+        sheet.getRange(foundRow, i + 1).setValue(data[h]);
+      }
+    });
+    return json({status:"success"});
+  } catch(ex) {
+    return json({status:"error", message: ex.toString()});
   }
-  if (foundRow === -1) return ContentService.createTextOutput(JSON.stringify({status:"error",message:"Row not found"})).setMimeType(ContentService.MimeType.JSON);
-  headers.forEach((h, i) => {
-    if (data[h] !== undefined && h !== "Application Number" && h !== "Form Submitted date") {
-      sheet.getRange(foundRow, i + 1).setValue(data[h]);
-    }
-  });
-  return ContentService.createTextOutput(JSON.stringify({status:"success"})).setMimeType(ContentService.MimeType.JSON);
+}
+
+// Helper (add once near top of doPost if not already present)
+function json(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }`;
 
-    // Show in a nice overlay
-    const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;";
-    overlay.innerHTML = `
-      <div style="background:#fff;border-radius:16px;max-width:700px;width:100%;max-height:90vh;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.3);">
-        <div style="background:#c53030;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;">
-          <div>
-            <div style="font-weight:700;font-size:15px;">⚠️ Apps Script Update Required</div>
-            <div style="font-size:12px;opacity:0.8;margin-top:2px;">Your backend doesn't support editing yet. Add this code to your Apps Script.</div>
-          </div>
-          <button onclick="this.closest('div[style]').remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;border-radius:50%;width:30px;height:30px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;">×</button>
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;";
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:16px;max-width:720px;width:100%;max-height:90vh;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.3);">
+      <div style="background:#c53030;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-weight:700;font-size:15px;">⚠️ Apps Script Update Required</div>
+          <div style="font-size:12px;opacity:0.85;margin-top:3px;">Paste this block inside your <code style="background:rgba(255,255,255,0.2);padding:1px 5px;border-radius:3px;">doPost(e)</code> to enable Edit/Save.</div>
         </div>
-        <div style="padding:16px 20px;overflow-y:auto;max-height:calc(90vh - 100px);">
-          <p style="font-size:13px;color:#555;margin-bottom:12px;">Copy and paste this code into your <strong>Google Apps Script</strong> doPost function:</p>
-          <pre style="background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:10px;font-size:11px;overflow-x:auto;line-height:1.6;white-space:pre-wrap;">${code}</pre>
-          <button onclick="navigator.clipboard.writeText(\`${code.replace(/`/g,'\`')}\`).then(()=>this.textContent='✅ Copied!')" style="margin-top:12px;background:#1a365d;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:13px;font-weight:700;cursor:pointer;">📋 Copy Code</button>
+        <button onclick="this.closest('div[style*=fixed]').remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;border-radius:50%;width:30px;height:30px;font-size:20px;cursor:pointer;line-height:1;flex-shrink:0;">×</button>
+      </div>
+      <div style="padding:20px;overflow-y:auto;max-height:calc(90vh - 70px);">
+        <p style="font-size:13px;color:#555;margin:0 0 12px;">Copy and paste inside your <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;">doPost(e)</code> if/else chain, then <strong>re-deploy the script as a new version</strong>.</p>
+        <pre id="_scriptCode" style="background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:10px;font-size:11px;overflow-x:auto;line-height:1.7;white-space:pre-wrap;margin:0;">${escapeHtml(code)}</pre>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+          <button onclick="navigator.clipboard.writeText(document.getElementById('_scriptCode').textContent).then(()=>{this.textContent='✅ Copied!';setTimeout(()=>this.textContent='📋 Copy Code',2000)})" style="background:#1a365d;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:13px;font-weight:700;cursor:pointer;">📋 Copy Code</button>
+          <button onclick="this.closest('div[style*=fixed]').remove()" style="background:#f1f5f9;color:#333;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;">Close</button>
         </div>
-      </div>`;
-    document.body.appendChild(overlay);
-  } else {
-    toast("❌ " + msg, "error");
-  }
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
 }
 
 
