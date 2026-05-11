@@ -1071,6 +1071,7 @@
             <option>OL Released</option>
             <option>OL on Hold</option>
             <option>OL Pending</option>
+            <option>Rejected by Student</option>
           </select>
           <div class="field-error">Please select status</div>
         </div>
@@ -1342,6 +1343,16 @@
         <!-- ═══ Section 6: Remarks ═══ -->
         <div class="section-title">Additional Notes</div>
 
+        <div class="field">
+          <label>RAG</label>
+          <select name="RAG">
+            <option value="">Select RAG</option>
+            <option>Red</option>
+            <option>Amber</option>
+            <option>Green</option>
+          </select>
+        </div>
+
         <div class="field full">
           <label>Remarks <span class="req">*</span></label>
           <textarea name="Remarks" placeholder="Any relevant notes, follow-up points, or special instructions" required></textarea>
@@ -1480,6 +1491,7 @@
               <option>OL Released</option>
               <option>OL on Hold</option>
               <option>OL Pending</option>
+              <option>Rejected by Student</option>
             </select>
           </div>
         </div>
@@ -1526,6 +1538,14 @@
           <div class="field"><label>Course Specialization</label><input type="text" name="Course Specialization"></div>
           <div class="field"><label>Course Fee</label><input type="number" name="Course Fee"></div>
           <div class="field"><label>Semester Fee</label><input type="number" name="Semester Fee"></div>
+          <div class="field"><label>RAG</label>
+            <select name="RAG">
+              <option value="">Select RAG</option>
+              <option>Red</option>
+              <option>Amber</option>
+              <option>Green</option>
+            </select>
+          </div>
         </div>
         <div class="edit-section-title">👥 Team & Source</div>
         <div class="form-grid">
@@ -1949,6 +1969,7 @@ function renderTable(entries) {
       <td>${escapeHtml(e["Course Specialization"] || "")}</td>
       <td style="text-align:right;">${fmtMoney(e["Course Fee"])}</td>
       <td style="text-align:right;">${fmtMoney(e["Semester Fee"])}</td>
+      <td>${renderRAG(e["RAG"] || "")}</td>
       <td>${escapeHtml(e["Remarks"] || "")}</td>
     </tr>`).join("");
 
@@ -1983,6 +2004,7 @@ function renderTable(entries) {
             <th>Course Specialization</th>
             <th>Course Fee</th>
             <th>Semester Fee</th>
+            <th>RAG</th>
             <th>Remarks</th>
           </tr>
         </thead>
@@ -1996,6 +2018,13 @@ function fmtMoney(v) {
   const n = Number(String(v).replace(/[^0-9.-]/g, ""));
   if (isNaN(n)) return escapeHtml(v);
   return "₹ " + n.toLocaleString("en-IN");
+}
+
+function renderRAG(rag) {
+  if (!rag) return "";
+  const colors = { Red: "#e53935", Amber: "#f59e0b", Green: "#22c55e" };
+  const color = colors[rag] || "#888";
+  return `<span style="display:inline-block;padding:2px 10px;border-radius:12px;background:${color};color:#fff;font-size:12px;font-weight:600;">${rag}</span>`;
 }
 
 function renderStatus(status) {
@@ -2131,7 +2160,7 @@ function exportCSV() {
     "User ID", "Password", "Alternate Number",
     "State", "City", "Source",
     "University Name", "Stream",
-    "Course Fee", "Semester Fee", "Remarks"
+    "Course Fee", "Semester Fee", "RAG", "Remarks"
   ];
   const escape = (v) => {
     const s = (v == null ? "" : String(v));
