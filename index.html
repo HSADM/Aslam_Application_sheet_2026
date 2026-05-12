@@ -1331,9 +1331,10 @@
         </div>
 
         <div class="field">
-          <label>Referral Code</label>
-          <input type="text" name="Referral Code" placeholder="If applicable">
-          <div class="hint">Leave blank if none</div>
+          <label>Referral Code <span class="req" id="referralReqStar" style="display:none;">*</span></label>
+          <input type="text" id="referralCodeInput" name="Referral Code" placeholder="If applicable">
+          <div class="field-error" id="referralCodeError">Referral Code is required for Amity University</div>
+          <div class="hint" id="referralHint">Leave blank if none</div>
         </div>
 
 
@@ -1491,16 +1492,14 @@
         <div class="section-title">Fee Details</div>
 
         <div class="field">
-          <label>Course Fee <span class="req">*</span></label>
-          <input type="number" name="Course Fee" placeholder="e.g. 250000" min="0" step="1" required>
-          <div class="field-error">Course fee is required</div>
+          <label>Course Fee</label>
+          <input type="number" name="Course Fee" placeholder="e.g. 250000" min="0" step="1">
           <div class="hint">Total course fee in ₹</div>
         </div>
 
         <div class="field">
-          <label>Semester Fee <span class="req">*</span></label>
-          <input type="number" name="Semester Fee" placeholder="e.g. 45000" min="0" step="1" required>
-          <div class="field-error">Semester fee is required</div>
+          <label>Semester Fee</label>
+          <input type="number" name="Semester Fee" placeholder="e.g. 45000" min="0" step="1">
           <div class="hint">Per-semester fee in ₹</div>
         </div>
 
@@ -2101,6 +2100,25 @@ function _setSyncStatus(state) {
 
 // ── Boot: load IDB → show immediately → revalidate in background ──────────
 document.addEventListener("DOMContentLoaded", async () => {
+  // ── Amity: make Referral Code mandatory ──────────────────────────────
+  const uniSelect      = document.querySelector('select[name="University Name"]');
+  const referralInput  = document.getElementById("referralCodeInput");
+  const referralStar   = document.getElementById("referralReqStar");
+  const referralHint   = document.getElementById("referralHint");
+
+  function toggleReferralRequired() {
+    if (!uniSelect || !referralInput) return;
+    const isAmity = uniSelect.value.toLowerCase().includes("amity");
+    referralInput.required = isAmity;
+    if (referralStar) referralStar.style.display = isAmity ? "inline" : "none";
+    if (referralHint) referralHint.style.display  = isAmity ? "none"   : "block";
+  }
+
+  if (uniSelect) {
+    uniSelect.addEventListener("change", toggleReferralRequired);
+    toggleReferralRequired(); // run on load
+  }
+  // ─────────────────────────────────────────────────────────────────────
   // 1. Try to load from IDB instantly (no network)
   const cached = await _idbLoad();
   if (cached && cached.data && cached.data.length > 0) {
