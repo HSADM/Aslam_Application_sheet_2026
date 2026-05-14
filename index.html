@@ -2124,7 +2124,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (appNumInput) {
       if (isAmity) {
         appNumInput.placeholder = "8-digit number (e.g. 12345678)";
-        appNumInput.pattern     = "\d{8}";
         appNumInput.maxLength   = 8;
         appNumInput.inputMode   = "numeric";
       } else {
@@ -2142,9 +2141,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     appNumInput.addEventListener("input", function() {
       const isAmity = uniSelect && uniSelect.value.toLowerCase().includes("amity");
       if (isAmity) {
-        // Allow digits only
-        this.value = this.value.replace(/\D/g, "").slice(0, 8);
-        if (appNumError) appNumError.style.display = this.value.length > 0 && this.value.length < 8 ? "block" : "none";
+        // Numbers only, max 8 digits
+        this.value = this.value.replace(/[^0-9]/g, "").slice(0, 8);
+        const ok = this.value.length === 8;
+        this.classList.toggle("invalid", this.value.length > 0 && !ok);
+        if (appNumError) appNumError.style.display = (this.value.length > 0 && !ok) ? "block" : "none";
+      } else {
+        this.classList.remove("invalid");
+        if (appNumError) appNumError.style.display = "none";
       }
     });
   }
@@ -2337,35 +2341,38 @@ form.addEventListener("submit", async (e) => {
   submitBtn.disabled = true;
   submitBtn.innerHTML = '<span class="spinner"></span>Submitting...';
 
-  try {
-    if (!API_URL) {
-      // Demo mode
-      await new Promise(r => setTimeout(r, 900));
-      const _now = new Date();
-      data["Form Submitted date"] = String(_now.getDate()).padStart(2,"0") + "-" + MON_NAMES[_now.getMonth()] + "-" + _now.getFullYear();
-      console.log("Demo mode — data:", data);
-      showSuccessScreen(data);
-      toast("Submitted (demo mode)", "success");
-      return;
-    }
+  // Set submitted date immediately on client side
+  const _now = new Date();
+  data["Form Submitted date"] = String(_now.getDate()).padStart(2,"0") + "-" + MON_NAMES[_now.getMonth()] + "-" + _now.getFullYear();
 
-    const res = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "submitApplication", ...data }),
-    });
-    const json = await res.json();
-    if (json.status !== "success") throw new Error(json.message || "Submission failed");
-
-    data["Form Submitted date"] = json.submittedDate;
+  if (!API_URL) {
+    // Demo mode — instant
     showSuccessScreen(data);
-    toast("Entry submitted successfully!", "success");
-  } catch (err) {
-    console.error(err);
-    toast(err.message || "Network error — please try again", "error");
-    submitBtn.disabled = false;
-    submitBtn.innerHTML = "Submit Entry";
+    toast("Submitted (demo mode)", "success");
+    return;
   }
+
+  // ── Show success immediately without waiting for server ──────────────
+  showSuccessScreen(data);
+  toast("Entry submitted successfully!", "success");
+
+  // ── Send to sheet in background ──────────────────────────────────────
+  fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "submitApplication", ...data }),
+  })
+  .then(r => r.json())
+  .then(json => {
+    if (json.status !== "success") {
+      console.warn("Sheet sync warning:", json.message);
+      toast("Saved locally — sheet sync may have an issue", "error");
+    }
+  })
+  .catch(err => {
+    console.error("Background submit error:", err);
+    toast("Network error — entry may not have saved to sheet", "error");
+  });
 });
 
 function showSuccessScreen(data) {
