@@ -1194,7 +1194,8 @@
 
         <div class="field">
           <label>Application Number <span class="req">*</span></label>
-          <input type="text" name="Application Number" placeholder="e.g. AU/UG/26/12149" required>
+          <input type="text" id="appNumberInput" name="Application Number" placeholder="e.g. AU/UG/26/12149" required>
+          <div class="field-error" id="appNumberError" style="display:none;">Amity University requires an 8-digit Application Number</div>
           <div class="field-error">Application number is required</div>
         </div>
 
@@ -2100,23 +2101,57 @@ function _setSyncStatus(state) {
 
 // ── Boot: load IDB → show immediately → revalidate in background ──────────
 document.addEventListener("DOMContentLoaded", async () => {
-  // ── Amity: make Referral Code mandatory ──────────────────────────────
-  const uniSelect      = document.querySelector('select[name="University Name"]');
-  const referralInput  = document.getElementById("referralCodeInput");
-  const referralStar   = document.getElementById("referralReqStar");
-  const referralHint   = document.getElementById("referralHint");
+  // ── Amity: Referral Code mandatory + Application Number 8-digit ──────
+  const uniSelect     = document.querySelector('select[name="University Name"]');
+  const referralInput = document.getElementById("referralCodeInput");
+  const referralStar  = document.getElementById("referralReqStar");
+  const referralHint  = document.getElementById("referralHint");
+  const appNumInput   = document.getElementById("appNumberInput");
+  const appNumError   = document.getElementById("appNumberError");
 
-  function toggleReferralRequired() {
-    if (!uniSelect || !referralInput) return;
+  function toggleAmityRules() {
+    if (!uniSelect) return;
     const isAmity = uniSelect.value.toLowerCase().includes("amity");
-    referralInput.required = isAmity;
-    if (referralStar) referralStar.style.display = isAmity ? "inline" : "none";
-    if (referralHint) referralHint.style.display  = isAmity ? "none"   : "block";
+
+    // Referral Code — mandatory for Amity
+    if (referralInput) {
+      referralInput.required = isAmity;
+      if (referralStar) referralStar.style.display = isAmity ? "inline" : "none";
+      if (referralHint) referralHint.style.display  = isAmity ? "none"   : "block";
+    }
+
+    // Application Number — 8-digit numeric only for Amity
+    if (appNumInput) {
+      if (isAmity) {
+        appNumInput.placeholder = "8-digit number (e.g. 12345678)";
+        appNumInput.pattern     = "\d{8}";
+        appNumInput.maxLength   = 8;
+        appNumInput.inputMode   = "numeric";
+      } else {
+        appNumInput.placeholder = "e.g. AU/UG/26/12149";
+        appNumInput.removeAttribute("pattern");
+        appNumInput.removeAttribute("maxLength");
+        appNumInput.removeAttribute("inputMode");
+      }
+      if (appNumError) appNumError.style.display = "none";
+    }
+  }
+
+  // Validate 8-digit on input (Amity only)
+  if (appNumInput) {
+    appNumInput.addEventListener("input", function() {
+      const isAmity = uniSelect && uniSelect.value.toLowerCase().includes("amity");
+      if (isAmity) {
+        // Allow digits only
+        this.value = this.value.replace(/\D/g, "").slice(0, 8);
+        if (appNumError) appNumError.style.display = this.value.length > 0 && this.value.length < 8 ? "block" : "none";
+      }
+    });
   }
 
   if (uniSelect) {
-    uniSelect.addEventListener("change", toggleReferralRequired);
-    toggleReferralRequired(); // run on load
+    uniSelect.addEventListener("change", toggleAmityRules);
+    toggleAmityRules(); // run on load
   }
   // ─────────────────────────────────────────────────────────────────────
   // 1. Try to load from IDB instantly (no network)
